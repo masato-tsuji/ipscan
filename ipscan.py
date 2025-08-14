@@ -138,12 +138,13 @@ def arp_scan_ip(ip, iface):
     return [(rcv.psrc, rcv.hwsrc) for _, rcv in ans]
 
 def active_scan(iface, scan_segments, max_threads=20):
-    found = set()
+    total_found = set()  # 全体の結果
     for segment in scan_segments:
         net = ipaddress.IPv4Network(segment)
         hosts = list(net.hosts())
         total = len(hosts)
         scanned_count = 0
+        found = set()  # セグメントごとの結果初期化
 
         def worker(ip):
             nonlocal scanned_count
@@ -159,22 +160,31 @@ def active_scan(iface, scan_segments, max_threads=20):
                 result = future.result()
                 with lock:
                     found.update(result)
+                    total_found.update(result)
+
         print()  # 改行
         for ip, mac in found:
             print(f"IP: {ip}, MAC: {mac}")
-    return found
+
+    return total_found
 
 # ----------------------------
 # メイン
 # ----------------------------
 def main():
     global selected_iface
-    parser = argparse.ArgumentParser(description="ハイブリッドネットワークスキャナー\n使用されているIPアドレスを探索します")
+    parser = argparse.ArgumentParser(
+        description="ハイブリッドネットワークスキャナー",
+        formatter_class=argparse.RawTextHelpFormatter
+    )
     parser.add_argument("--iface", help="使用するネットワークインターフェース名 例: eth0")
     parser.add_argument("--segments", help="カンマ区切りでスキャン対象セグメント指定（例: 192.168.0.0/24,172.16.0.0/24）")
     parser.add_argument("--full", action="store_true", help="全範囲スキャンを有効化（リンクローカル169.254.x.xを含む）")
-    parser.add_argument("--fast-range", type=int, default=2, help="fast scanの第3オクテット範囲（デフォルト2 → 0と1）")
-    parser.add_argument("--threads", type=int, default=20, help="並列スレッド数（デフォルト20 max50）")
+    parser.add_argument("--fast-range", type=int, default=2,
+                        help="fast scanの第3オクテット範囲（デフォルト2 → 0と1）")
+    parser.add_argument("--threads", type=int, default=20,
+                        help="並列スレッド数（デフォルト20 max50）")
+
     args = parser.parse_args()
 
     selected_iface = args.iface or select_interface()
@@ -192,7 +202,7 @@ def main():
     print(f"[*] 使用可能なIPを発見: {free_ip}")
     set_ip(selected_iface, free_ip, original_config["netmask"])
 
-    # スキャン対象セグメントリスト
+    # スキャン対象セグメント
     if args.segments:
         scan_segments = [seg.strip() for seg in args.segments.split(",")]
     else:
