@@ -1,6 +1,21 @@
 # ipscan.py
 
-# module
+### 概要
+ネットワーク上に接続されているIPアドレスを探索します。
+ローカルネットワークで使用されている主なセグメントをスキャンして応答を確認しリスト化します。
+どんなIPアドレスを設定したか忘れてしまいアクセスできない場合などに役立ちます。
+ネットワークに負荷をかけますので本番環境などでの使用は避け、調査対象機器とHUBで接続した状態で
+実行することをお勧めします。
+
+### 動作
+まずは相手からのARP要求などのブロードキャストをプロミスキャスモードで探索し
+次にローカルIPでよく使われているセグメントを順に探索します。
+（探索範囲はオプションで指定します）
+
+スキャンはpingで実装していますが、機器によってはICMPをブロックしておりpingの
+応答が無い場合がありますのでご注意ください。
+
+# pytohn install module
 `pip install scapy netifaces psutil`
 
 # exec
@@ -34,6 +49,10 @@
 ・応答パケットが増えるとスレッド管理のオーバーヘッドも増える
 
 
-# for windows application
+# for application
+実行する環境の実行ファイルになります（windowsアプリケーションならwindows上で実行）
 `pip install pyinstaller`
 `pyinstaller --onefile --console ipscan.py`
+
+
+
