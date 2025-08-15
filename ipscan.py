@@ -7,8 +7,9 @@ from scapy.all import ARP, Ether, srp, sniff
 import ipaddress
 import signal
 import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
+import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ----------------------------
 # グローバル
@@ -16,6 +17,7 @@ import threading
 original_config = {}
 selected_iface = None
 lock = threading.Lock()
+backup_file = "ip_config_backup.json"
 
 # Ctrl+Cで元設定復元
 def signal_handler(sig, frame):
@@ -47,11 +49,35 @@ def get_iface_config(iface):
     gateways = netifaces.gateways()
     default_gw = gateways.get('default', {}).get(netifaces.AF_INET)
     gateway = default_gw[0] if default_gw else None
+
+    # DHCPか静的か判定
+    mode = "STATIC"
+    os_name = platform.system().lower()
+    if os_name != "windows":
+        try:
+            result = subprocess.run(["nmcli", "dev", "show", iface], capture_output=True, text=True)
+            for line in result.stdout.splitlines():
+                if "IP4.DHCP" in line and line.strip().split(":")[1].strip():
+                    mode = "DHCP"
+                    break
+        except:
+            pass
+    else:
+        # Windowsでは簡易的にDHCPかを確認
+        try:
+            result = subprocess.run(["netsh", "interface", "ip", "show", "config", iface],
+                                    capture_output=True, text=True)
+            if "DHCP enabled: Yes" in result.stdout:
+                mode = "DHCP"
+        except:
+            pass
+
     return {
         "interface": iface,
         "ip": ip,
         "netmask": netmask,
-        "gateway": gateway
+        "gateway": gateway,
+        "mode": mode
     }
 
 def save_original_config(iface):
@@ -60,18 +86,38 @@ def save_original_config(iface):
     print("\n[INFO] 現在のIP設定:")
     for k, v in original_config.items():
         print(f"  {k}: {v}")
+    # バックアップ保存
+    with open(backup_file, "w") as f:
+        json.dump(original_config, f, indent=2)
+    print(f"[INFO] 設定をバックアップファイルに保存: {backup_file}")
 
-def restore_original_config():
-    if selected_iface and original_config.get("ip"):
-        os_name = platform.system().lower()
-        if os_name != "windows":
-            subprocess.run(["sudo", "ip", "addr", "flush", "dev", selected_iface])
-            subprocess.run(["sudo", "ip", "addr", "add", f"{original_config['ip']}/{netmask_to_prefix(original_config['netmask'])}", "dev", selected_iface])
-            subprocess.run(["sudo", "ip", "route", "add", "default", "via", original_config['gateway'], "dev", selected_iface])
-            subprocess.run(["sudo", "ip", "link", "set", selected_iface, "up"])
-        else:
-            subprocess.run(["netsh", "interface", "ip", "set", "address", selected_iface, "static", original_config["ip"], original_config["netmask"], original_config["gateway"]])
-        print("[+] 元の設定に復元しました。")
+def restore_original_config(file=None):
+    global selected_iface
+    config = original_config
+    if file:
+        try:
+            with open(file, "r") as f:
+                config = json.load(f)
+            print(f"[INFO] バックアップファイルから設定を読み込み: {file}")
+        except Exception as e:
+            print(f"[!] バックアップファイル読み込み失敗: {e}")
+            return
+    if not config.get("ip"):
+        print("[!] 復元情報なし")
+        return
+    os_name = platform.system().lower()
+    iface = config["interface"]
+    ip = config["ip"]
+    netmask = config["netmask"]
+    gateway = config["gateway"]
+    if os_name != "windows":
+        subprocess.run(["sudo", "ip", "addr", "flush", "dev", iface])
+        subprocess.run(["sudo", "ip", "addr", "add", f"{ip}/{netmask_to_prefix(netmask)}", "dev", iface])
+        subprocess.run(["sudo", "ip", "route", "add", "default", "via", gateway, "dev", iface])
+        subprocess.run(["sudo", "ip", "link", "set", iface, "up"])
+    else:
+        subprocess.run(["netsh", "interface", "ip", "set", "address", iface, "static", ip, netmask, gateway])
+    print("[+] IP設定を復元しました。")
 
 # ----------------------------
 # IP変更
@@ -138,13 +184,13 @@ def arp_scan_ip(ip, iface):
     return [(rcv.psrc, rcv.hwsrc) for _, rcv in ans]
 
 def active_scan(iface, scan_segments, max_threads=20):
-    total_found = set()  # 全体の結果
+    total_found = set()
     for segment in scan_segments:
         net = ipaddress.IPv4Network(segment)
         hosts = list(net.hosts())
         total = len(hosts)
         scanned_count = 0
-        found = set()  # セグメントごとの結果初期化
+        found = set()
 
         def worker(ip):
             nonlocal scanned_count
@@ -162,7 +208,7 @@ def active_scan(iface, scan_segments, max_threads=20):
                     found.update(result)
                     total_found.update(result)
 
-        print()  # 改行
+        print()
         for ip, mac in found:
             print(f"IP: {ip}, MAC: {mac}")
 
@@ -184,8 +230,13 @@ def main():
                         help="fast scanの第3オクテット範囲（デフォルト2 → 0と1）")
     parser.add_argument("--threads", type=int, default=20,
                         help="並列スレッド数（デフォルト20 max50）")
+    parser.add_argument("--restore", help="バックアップファイルからIP設定を復元")
 
     args = parser.parse_args()
+
+    if args.restore:
+        restore_original_config(args.restore)
+        return
 
     selected_iface = args.iface or select_interface()
     save_original_config(selected_iface)
@@ -224,3 +275,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
